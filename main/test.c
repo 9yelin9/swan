@@ -1,6 +1,6 @@
 #define N 3
 
-#include "swan.h"
+#include "swann.h"
 
 int main() {
 	int i, j;

@@ -1,4 +1,4 @@
-#include "swan.h"
+#include "swann.h"
 
 void CalcEigen(lapack_int n, lapack_complex_double *es, double *ev) {
 	char jobz='V', uplo='L';

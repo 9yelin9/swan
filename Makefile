@@ -1,4 +1,4 @@
-DIRS = lib main
+DIRS = libc main
 
 .PHONY: all clean dep
 .SUFFIXES : .c .o

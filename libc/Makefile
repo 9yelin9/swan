@@ -8,9 +8,9 @@ CFLAGS = -g -O2 -Wall -mcmodel=medium -I../include -I$(USR_DIR)/include -fPIC -f
 LDFLAGS = -shared -L$(USR_DIR)/lib -L$(USR_DIR)/lib64 -fopenmp 
 LINKS = -lz -lm -lblas -llapack
 
-OBJS = libswan.o
-LIBS_A = libswan.a
-LIBS_S = ../libswan.so
+OBJS = libswann.o
+LIBS_A = libswann.a
+LIBS_S = ../libswann.so
 
 .PHONY: all clean dep
 .SUFFIXES : .c .o

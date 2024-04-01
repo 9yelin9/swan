@@ -1,6 +1,6 @@
 #!/home/9yelin9/.local/bin/python3
 
-swan_path = '/home/9yelin9/swan'
+swann_path = '/home/9yelin9/swann'
 band_path = 'band'
 
 import os
@@ -12,10 +12,14 @@ print('num_threads =', num_threads, end='\n\n')
 import argparse
 parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
 parser.add_argument('--atom', type=str, required=True)
-parser.add_argument('-st', '--showtR',   type=str, nargs='+', help='ShowtR: <n(0 or int)>')
+parser.add_argument('--plugin', type=str)
 parser.add_argument('-gb', '--genband',  type=str, nargs='+', help='GenBand: <n(0 or int)> <Nk>')
+parser.add_argument('-st', '--showtR',   type=str, nargs='+', help='ShowtR: <n(0 or int)>')
 parser.add_argument('-sb', '--showband', type=str, nargs='+', help='ShowBand: <path_band(sep=:)>')
 args = parser.parse_args()                                                                     
+
+if args.plugin:
+    if re.search('r2ir2o7', args.plugin): from libpy import r2ir2o7
 
 import matplotlib.pyplot as plt
 plt.rcParams.update({'font.size': 28})
@@ -87,7 +91,8 @@ def ReadLattice(n):
 
     R = []
     for _, d in df.iterrows():
-        r = np.linalg.norm(d['i']*A[0] + d['j']*A[1] + d['k']*A[2] + pos[int(d['q_pos'])] - pos[int(d['p_pos'])])
+        #r = np.linalg.norm(d['i']*A[0] + d['j']*A[1] + d['k']*A[2] + pos[int(d['q_pos'])] - pos[int(d['p_pos'])])
+        r = np.linalg.norm(d['i']*A[0] + d['j']*A[1] + d['k']*A[2])
         R.append(r)
     df['R'] = R
 
@@ -132,18 +137,8 @@ def ReadK(Nk):
 
     return k, k_label, k_point
 
-def ShowtR(n):
-    n = int(n)
-    print('n =', n, end='\n\n')
-
-    df, R = ReadLattice(n)
-    R1 = R[1]
-    t1_max = np.max(df[np.abs(df['R']-R1) < 1e-6]['t'])
-
-    print('%6s%16s%16s' % ('n', 'R/R1', 't_max/t1_max'))
-    for i in range(1, len(R)):
-        t_max = np.max(df[np.abs(df['R']-R[i]) < 1e-6]['t'])
-        print('%6d%16.6f%16.6f' % (i, R[i]/R1, t_max/t1_max)) 
+def GenLattice(n, add_spin=0):
+    pass
 
 def GenBand(n, Nk):
     n, Nk = int(n), int(Nk)
@@ -158,8 +153,8 @@ def GenBand(n, Nk):
     k_c    = np.ctypeslib.as_ctypes(np.ravel(k))
     band_c = np.ctypeslib.as_ctypes(np.ravel(np.zeros((Nk, Nb))))
 
-    swan_c = ctypes.cdll.LoadLibrary('%s/libswan.so' % swan_path)
-    swan_c.GenBand(num_threads, Dim, Nb, Nk, len(df), k_c, site_c, obt_c, t_c, band_c)
+    swann_c = ctypes.cdll.LoadLibrary('%s/libswann.so' % swann_path)
+    swann_c.GenBand(num_threads, Dim, Nb, Nk, len(df), k_c, site_c, obt_c, t_c, band_c)
     band = np.reshape(np.ctypeslib.as_array(band_c), (Nk, Nb))
 
     os.makedirs(band_path, exist_ok=True)
@@ -167,22 +162,46 @@ def GenBand(n, Nk):
     np.savetxt(fn, band)
     print('File saved at %s' % fn)
 
+def ShowtR(n):
+    n = int(n)
+    print('n =', n, end='\n\n')
+
+    df, R = ReadLattice(n)
+    R1 = R[1]
+    t1_max = np.max(df[np.abs(df['R']-R1) < 1e-6]['t'])
+
+    print('%6s%16s%16s' % ('n', 'R/R1', 't_max/t1_max'))
+    for i in range(1, len(R)):
+        t_max = np.max(df[np.abs(df['R']-R[i]) < 1e-6]['t'])
+        print('%6d%16.6f%16.6f' % (i, R[i]/R1, t_max/t1_max)) 
+
 def ShowBand(path_band):
     path_band = path_band.split(':')
     Nk = ReSubInt('Nk', path_band[0])
     k, k_label, k_point = ReadK(Nk)
 
     fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
+    color = plt.cm.tab10(range(10))
+    ls = ['-', '--', '-.', ':'] * 2
 
-    for p, c in zip(path_band, plt.cm.tab10(np.linspace(0, 1, len(path_band)))):
-        band = np.genfromtxt(p)
-        label = 'n=%d' % ReSubInt('n', p)
-        ax.plot(range(Nk), band[:, 0], color=c, label=label)
-        for i in range(1, Nb): ax.plot(range(Nk), band[:, i], color=c)
+    for i, p in enumerate(path_band):
+        band, n = np.genfromtxt(p), ReSubInt('n', p)
+        label = 'n=%d' % n 
+
+        if i:
+            label += ', $|E_{%d}-E_{%d}|_\mathrm{max}$=%.4f' % (n0, n, np.max(np.abs(band0 - band)))
+            band_max, band_scale = np.max(band), np.max(band)-np.min(band)
+            dband = band0_max - band_max; #band += dband; band *= band_scale/band0_scale
+        else:
+            band0, band0_max, band0_scale, n0 = band, np.max(band), np.max(band)-np.min(band), n 
+
+        ax.plot(range(Nk), band[:, 0], color=color[i], ls=ls[i], label=label)
+        for j in range(1, Nb): ax.plot(range(Nk), band[:, j], color=color[i], ls=ls[i])
     ax.grid(True, axis='x')
     ax.legend(fontsize='xx-small')
+    ax.set_ylim([np.min(band0)-0.5, np.max(band0)+0.5])
     ax.set_xticks(k_point, labels=k_label)
-    ax.set_ylabel(r'$E-E_{F}$')
+    ax.set_ylabel(r'$E$')
 
     fn = '%s/band_' % band_path + '_'.join(['n%d' % ReSubInt('n', p) for p in path_band]) + '_Nk%d.png' % Nk
     fig.savefig(fn)
