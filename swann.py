@@ -1,7 +1,7 @@
 #!/home/9yelin9/.local/bin/python3
 
 swann_path = '/home/9yelin9/swann'
-band_path = 'band'
+band_path = 'swann_band'
 lat_columns = ['i', 'j', 'k', 'p', 'q', 't_real', 't_imag']
 lat_dtypes = {'i':'i', 'j':'i', 'k':'i', 'p':'i', 'q':'i', 't_real':'d', 't_imag':'d'}
 
