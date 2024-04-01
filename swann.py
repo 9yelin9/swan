@@ -2,6 +2,8 @@
 
 swann_path = '/home/9yelin9/swann'
 band_path = 'band'
+lat_columns = ['i', 'j', 'k', 'p', 'q', 't_real', 't_imag']
+lat_dtypes = {'i':'i', 'j':'i', 'k':'i', 'p':'i', 'q':'i', 't_real':'d', 't_imag':'d'}
 
 import os
 num_threads = 1
@@ -12,14 +14,10 @@ print('num_threads =', num_threads, end='\n\n')
 import argparse
 parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
 parser.add_argument('--atom', type=str, required=True)
-parser.add_argument('--plugin', type=str)
-parser.add_argument('-gb', '--genband',  type=str, nargs='+', help='GenBand: <n(0 or int)> <Nk>')
-parser.add_argument('-st', '--showtR',   type=str, nargs='+', help='ShowtR: <n(0 or int)>')
+parser.add_argument('-wl', '--wann2lat',  type=int, nargs='+', help='Wann2Lat: <n(0 or int)> <show_tR=0/1>')
+parser.add_argument('-gb', '--genband',  type=str, nargs='+', help='GenBand: <path_lat> <Nk>')
 parser.add_argument('-sb', '--showband', type=str, nargs='+', help='ShowBand: <path_band(sep=:)>')
 args = parser.parse_args()                                                                     
-
-if args.plugin:
-    if re.search('r2ir2o7', args.plugin): from libpy import r2ir2o7
 
 import matplotlib.pyplot as plt
 plt.rcParams.update({'font.size': 28})
@@ -40,11 +38,14 @@ def ReSubInt(pattern, string):
     return int(re.sub(pattern, '', re.search('%s[-]?\d+' % pattern, string).group()))
 
 def ReadInput(atom):
-    Nb, pos0, A = -1, [], []
+    path, pos0, A = [], [], []
 
-    with open('wannier90.win', 'r') as f:
+    with open('swann_input.txt', 'r') as f:
+        read_line = 0
         for line in f:
-            if re.search('num_wann', line): Nb = int(line.split()[-1]); break
+            if re.search('end kpoint_path', line): break
+            elif read_line: path.append(line.split())
+            elif re.search('begin kpoint_path', line): read_line = 1
 
         read_line = 0
         for line in f:
@@ -66,16 +67,14 @@ def ReadInput(atom):
     for i, p in enumerate(pos0):
         for j in range(Dim): pos[i] = np.add(pos[i], p[j]*A[j])
 
-    return Nb, pos, A 
+    return path, pos, A 
 
-Nb, pos, A = ReadInput(args.atom)
-Ni = len(pos)
-Nc = Nb // Ni
+path, pos, A = ReadInput(args.atom)
+print('path =', *path, sep='\n')
+print('pos =', *pos, sep='\n')
+print('A =', *A, sep='\n', end='\n\n')
 
-print('Nb =', Nb, '\nNi =', Ni, '\nNc =', Nc)
-print('pos =\n', pos, '\nA =\n', A, end='\n\n')
-
-def ReadLattice(n):
+def Wann2Lat(n, show_tR=0):
     pat_site = '[-]?\d+\s+'
     pat_obt  = '[-]?\d+\s+'
     pat_t    = '[-]?\d+[.]\d+\s+'
@@ -84,39 +83,44 @@ def ReadLattice(n):
     with open('wannier90_hr.dat', 'r') as f:
         for line in f: 
             if re.search(pat, line): break
-        df = pd.read_csv(f, sep='\s+', names=['i', 'j', 'k', 'p', 'q', 't_real', 't_imag'])
+        df = pd.read_csv(f, sep='\s+', names=lat_columns).astype(lat_dtypes)
 
-    df['t'] = np.sqrt(df['t_real']**2 + df['t_imag']**2)
-    df['p_pos'], df['q_pos'] = (df['p']-1) // Nc, (df['q']-1) // Nc
-
-    R = []
-    for _, d in df.iterrows():
-        #r = np.linalg.norm(d['i']*A[0] + d['j']*A[1] + d['k']*A[2] + pos[int(d['q_pos'])] - pos[int(d['p_pos'])])
-        r = np.linalg.norm(d['i']*A[0] + d['j']*A[1] + d['k']*A[2])
-        R.append(r)
-    df['R'] = R
-
-    R = np.unique(np.round(R, decimals=6))
     if n:
-        R = R[:n+1]
+        #df['p_pos'], df['q_pos'] = (df['p']-1) // Nc, (df['q']-1) // Nc
+        R = []
+        for _, d in df.iterrows():
+            #r = np.linalg.norm(d['i']*A[0] + d['j']*A[1] + d['k']*A[2] + pos[int(d['q_pos'])] - pos[int(d['p_pos'])])
+            r = np.linalg.norm(d['i']*A[0] + d['j']*A[1] + d['k']*A[2])
+            R.append(r)
+        df['R'] = R
+
+        R = np.unique(np.round(R, decimals=6))[:n+1]
         df = df[df['R'] < R[n]]
 
-    return df, R
+    if show_tR:
+        df['t'] = np.sqrt(df['t_real']**2 + df['t_imag']**2)
 
-def ReadK(Nk):
+        R1 = R[1]
+        t1_max = np.max(df[np.abs(df['R']-R1) < 1e-6]['t'])
+
+        print('%6s%16s%16s' % ('n', 'R/R1', 't_max/t1_max'))
+        for i in range(1, len(R)):
+            t_max = np.max(df[np.abs(df['R']-R[i]) < 1e-6]['t'])
+            print('%6d%16.6f%16.6f' % (i, R[i]/R1, t_max/t1_max))
+        print()
+
+    fn = 'lattice_n%d.txt' % n
+    np.savetxt(fn, df[lat_columns], fmt=['%5d', '%5d', '%5d', '%5d', '%5d', '%12.6f', '%12.6f'])
+    print('File saved at %s' % fn)
+
+def GenK(Nk):
     path_label, path_point = [], []
+    for p in path:
+        path_label.append([p[0],       p[Dim+1]])
+        path_point.append([p[1:Dim+1], p[Dim+2:]])
+    path_label, path_point = np.array(path_label), np.array(path_point, dtype='d')
 
-    with open('wannier90.win', 'r') as f:
-        read_line = 0
-        for line in f:
-            if re.search('end kpoint_path', line): break
-            elif read_line:
-                lines = line.split()
-                path_label.append([lines[0],       lines[Dim+1]])
-                path_point.append([lines[1:Dim+1], lines[Dim+2:]])
-            elif re.search('begin kpoint_path', line): read_line = 1
-        path_label, path_point = np.array(path_label), np.array(path_point, dtype='d')
-        k_label = np.append(path_label[:, 0], path_label[-1, 1])
+    k_label = np.append(path_label[:, 0], path_label[-1, 1])
 
     dist = []
     for pi, pf in path_point:
@@ -137,15 +141,13 @@ def ReadK(Nk):
 
     return k, k_label, k_point
 
-def GenLattice(n, add_spin=0):
-    pass
+def GenBand(path_lat, Nk):
+    Nk = int(Nk)
+    print('path_lat =', path_lat, '\nNk =', Nk, end='\n\n')
 
-def GenBand(n, Nk):
-    n, Nk = int(n), int(Nk)
-    print('n =', n, '\nNk =', Nk, end='\n\n')
-
-    df, R = ReadLattice(n)
-    k, k_label, k_point = ReadK(Nk)
+    df = pd.read_csv(path_lat, sep='\s+', names=lat_columns).astype(lat_dtypes)
+    Nb = int(np.max(df['p']))
+    k, k_label, k_point = GenK(Nk)
 
     site_c = np.ctypeslib.as_ctypes(np.ravel(df[['i', 'j', 'k']].astype(dtype='i')))
     obt_c  = np.ctypeslib.as_ctypes(np.ravel(df[['p', 'q']].astype(dtype='i')))
@@ -158,27 +160,16 @@ def GenBand(n, Nk):
     band = np.reshape(np.ctypeslib.as_array(band_c), (Nk, Nb))
 
     os.makedirs(band_path, exist_ok=True)
-    fn = '%s/band_n%d_Nk%d.dat' % (band_path, n, Nk)
+    fn = '%s/band_%s_Nk%d.dat' % (band_path, re.sub('.txt', '', re.sub('lattice_', '', path_lat)), Nk)
     np.savetxt(fn, band)
     print('File saved at %s' % fn)
 
-def ShowtR(n):
-    n = int(n)
-    print('n =', n, end='\n\n')
-
-    df, R = ReadLattice(n)
-    R1 = R[1]
-    t1_max = np.max(df[np.abs(df['R']-R1) < 1e-6]['t'])
-
-    print('%6s%16s%16s' % ('n', 'R/R1', 't_max/t1_max'))
-    for i in range(1, len(R)):
-        t_max = np.max(df[np.abs(df['R']-R[i]) < 1e-6]['t'])
-        print('%6d%16.6f%16.6f' % (i, R[i]/R1, t_max/t1_max)) 
-
 def ShowBand(path_band):
     path_band = path_band.split(':')
+    print('path_band =', *path_band, sep='\n', end='\n\n')
+
     Nk = ReSubInt('Nk', path_band[0])
-    k, k_label, k_point = ReadK(Nk)
+    k, k_label, k_point = GenK(Nk)
 
     fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
     color = plt.cm.tab10(range(10))
@@ -194,6 +185,7 @@ def ShowBand(path_band):
             dband = band0_max - band_max; #band += dband; band *= band_scale/band0_scale
         else:
             band0, band0_max, band0_scale, n0 = band, np.max(band), np.max(band)-np.min(band), n 
+            Nb = band0.shape[1]
 
         ax.plot(range(Nk), band[:, 0], color=color[i], ls=ls[i], label=label)
         for j in range(1, Nb): ax.plot(range(Nk), band[:, j], color=color[i], ls=ls[i])
@@ -208,7 +200,7 @@ def ShowBand(path_band):
     print('Figure saved at %s' % fn)
     plt.show()
 
-if args.showtR: ShowtR(*args.showtR)
+if args.wann2lat: Wann2Lat(*args.wann2lat)
 elif args.genband: GenBand(*args.genband)
 elif args.showband: ShowBand(*args.showband)
 else: parser.print_help()
