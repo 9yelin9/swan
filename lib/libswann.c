@@ -18,7 +18,7 @@ void GenBand(int num_threads, int Dim, int Nb, int Nk, int Nl, double *k, int *s
 	double dot;
 	lapack_complex_double tb[Nb*Nb];
 
-#pragma omp parallel for ordered private(i, j, dot, tb) num_threads(num_threads)
+//#pragma omp parallel for ordered private(i, j, dot, tb) num_threads(num_threads)
 	for(n=0; n<Nk; n++) {
 		memset(tb, 0, sizeof(tb));
 		for(i=0; i<Nl; i++) {
