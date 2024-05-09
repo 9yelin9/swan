@@ -9,62 +9,53 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class Swann:
-    def __init__(self, path_data):
+    def __init__(self):
         np.set_printoptions(precision=6, suppress=True)
         plt.rcParams.update({'font.size': 28})
+        self.Dim = 3
 
-        self.path_data = path_data
-        for d in [env.path_lat, env.path_band, env.path_fig]: os.makedirs('%s/%s' % (path_data, d), exist_ok=True)
-        self.Dim, self.Nb, self.Nc, self.Ni, self.k_path, self.pos, self.A = self.GetWin()
-
-    def GetWin(self):
-        Dim, Nb, Nc, Ni = 0, 0, 0, 0
-        k_path, pos0, basis, A = [], [], [], []
+    def ReadWin(self):
+        self.Nb, self.Nc, self.Ni = 0, 0, 0
+        self.k_path, self.pos, self.basis, self.A = [], [], [], []
 
         with open('%s/wannier90.win' % self.path_data, 'r') as f:
             read_line = 0
             for line in f:
                 if re.search('end kpoint_path', line): break
-                elif read_line: k_path.append(line.split())
+                elif read_line: self.k_path.append(line.split())
                 elif re.search('begin kpoint_path', line): read_line = 1
 
             read_line = 0
             for line in f:
                 if re.search('end projections', line): break
                 elif read_line:
-                    pos0.append(re.sub('f=|:.+', '', line).split(','))
-                    basis.append(re.sub('.+:|\n', '', line))
+                    self.pos.append(re.sub('f=|:.+', '', line).split(','))
+                    self.basis.append(re.sub('.+:|\n', '', line))
                 elif re.search('begin projections', line): read_line = 1
-            Nb, Nc = len(basis), len(set(basis)); Ni = Nb // Nc
-            pos0 = np.round(np.array(pos0, dtype='d'), decimals=6)[::Nc]
+            self.Nb, self.Nc = len(self.basis), len(set(self.basis)); self.Ni = self.Nb // self.Nc
+            self.pos = np.round(np.array(self.pos, dtype='d'), decimals=6)[::self.Nc]
 
             read_line = 0
             for line in f:
                 if re.search('end unit_cell_cart', line): break
-                elif read_line: A.append(line.split())
+                elif read_line: self.A.append(line.split())
                 elif re.search('begin unit_cell_cart', line): read_line = 1
-            A = np.array(A, dtype='d')
-            A /= A[A > 0][0]
-            Dim = len(A)
-            pos = np.array([np.sum([p[i]*A[i] for i in range(Dim)], axis=0) for p in pos0])
+            self.A = np.array(self.A, dtype='d'); self.A /= self.A[self.A > 0][0]
+            self.pos = np.array([np.sum([p[i]*self.A[i] for i in range(self.Dim)], axis=0) for p in self.pos])
 
-        print('Dim =', Dim, 'Nb =', Nb, 'Nc =', Nc, 'Ni =', Ni)
-        print('path =', *k_path, sep='\n')
-        print('pos =', *pos, sep='\n')
-        print('A =', *A, sep='\n', end='\n\n')
+        print('Nb =', self.Nb, 'Nc =', self.Nc, 'Ni =', self.Ni)
+        print('path =', *self.k_path, sep='\n')
+        print('pos =', *self.pos, sep='\n')
+        print('A =', *self.A, sep='\n', end='\n\n')
 
-        return Dim, Nb, Nc, Ni, k_path, pos, A
+    def GetDirSave(self, path_in, path_out):
+        self.path_data = path_in.split('swann')[0]
+        dn = '%s/%s' % (self.path_data, path_out)
+        os.makedirs(dn, exist_ok=True)
+        return dn
 
     def GetLat(self, path_lat):
-        pat_site = '[-]?\d+\s+'
-        pat_obt  = '[-]?\d+\s+'
-        pat_t    = '[-]?\d+[.]\d+\s+'
-        pat = self.Dim * pat_site + 2 * pat_obt + 2 * pat_t
-
-        with open(path_lat, 'r') as f:
-            for line in f: 
-                if re.search(pat, line): break
-            df = pd.read_csv(f, sep='\s+', names=env.lat_col).astype(dict(list(env.lat_dtype.items())))
+        df = pd.read_csv(path_lat, sep='\s+', names=env.lat_col).astype(dict(list(env.lat_dtype.items())))
 
         r_list = np.array([np.sum([d[i]*self.A[i] for i in range(self.Dim)], axis=0) + self.pos[(d.q-1)//self.Nc] - self.pos[(d.p-1)//self.Nc] for d in df.itertuples(index=False)])
         norm_list = np.round(np.linalg.norm(r_list, axis=1), decimals=6)
@@ -112,8 +103,9 @@ class Swann:
 
         return k, k_label, k_point
 
-    def GenLat(self, n, show_t=0, show_tR=0):
-        df, r_list, norm_list = self.GetLat('%s/wannier90_hr.dat' % self.path_data)
+    def GenLat(self, path_data, n, show_t=0, show_tR=0):
+        dn = self.GetDirSave(path_data, env.path_lat); self.ReadWin()
+        df, r_list, norm_list = self.GetLat('%s/lattice_n0.txt' % dn)
 
         if n:
             norm_list = np.unique(norm_list)[:n+2] #r_list = r_list[norm_list < norm_list[n+1]]; r_list_uq = np.unique(r_list, axis=0)
@@ -138,16 +130,18 @@ class Swann:
                 print('%6d%16.6f%16.6f' % (i, norm_list[i]/norm_list[1], t_max/t1_max))
             print()
 
-        fn = '%s/%s/lattice_n%d.txt' % (self.path_data, env.path_lat, n)
+        fn = '%s/lattice_n%d.txt' % (dn, n)
         np.savetxt(fn, df[env.lat_col], fmt=env.lat_format)
         print('File saved at %s\n' % fn)
 
     def GenBand(self, path_lat, Nk, show_band=0):
+        dn = self.GetDirSave(path_lat, env.path_band); self.ReadWin()
         Nk, show_band = int(Nk), int(show_band)
         print('path_lat =', path_lat, '\nNk =', Nk, end='\n\n')
 
-        df = pd.read_csv(path_lat, sep='\s+', names=env.lat_col).astype(env.lat_dtype)
+        df, _, _ = self.GetLat(path_lat) 
         k, k_label, k_point = self.GetK(Nk)
+        if self.Nb != df['p'].max(): print('Wrong Nb =', df['p'].max(), end='\n\n'); sys.exit(1)
 
         site_c = np.ctypeslib.as_ctypes(np.ravel(df[['i', 'j', 'k']].astype(dtype='i')))
         obt_c  = np.ctypeslib.as_ctypes(np.ravel(df[['p', 'q']].astype(dtype='i')))
@@ -159,19 +153,26 @@ class Swann:
         swann_c.GenBand(env.num_thread, self.Dim, self.Nb, Nk, len(df), k_c, site_c, obt_c, t_c, band_c)
         band = np.reshape(np.ctypeslib.as_array(band_c), (Nk, self.Nb))
 
-        fn = '%s/%s/%s' % (self.path_data, env.path_band, re.sub('lattice_', 'band_', re.sub('[.]txt', '_Nk%d.txt' % Nk, path_lat)))
+        fn = '%s/%s' % (dn, re.sub('lattice_', 'band_', re.sub('[.]txt', '_Nk%d.txt' % Nk, path_lat)))
         np.savetxt(fn, band)
         print('File saved at %s\n' % fn)
         if show_band: ShowBand(fn)
 
     def ShowT(self, path_lat):
-        df, r_list, norm_list = self.GetLat(path_lat)
-        t_list = self.GetT(df)
-        for norm, r, t in t_list:
-            print(norm, r, '\n', t.real, end='\n\n')
+        self.GetDirSave(path_lat, env.path_lat); self.ReadWin()
+        t_list = self.GetT(self.GetLat(path_lat)[0])
+
+        not_hermitian = []
+        for i, (norm, r, t) in enumerate(t_list):
+            if np.count_nonzero(np.abs(t - np.conjugate(t).T) > 1e-6): not_hermitian.append(i)
+            print(norm, r, '\n', t, end='\n\n')
+
+        print('%d of Non-hermitian t:' % len(not_hermitian))
+        for t_idx in not_hermitian:
+            print(norm, r, '\n', t, end='\n\n')
         
     def ShowBand(self, path_band, fit_point=0):
-        path_band = path_band.split(':')
+        path_band = path_band.split(':'); dn = self.GetDirSave(path_band[0], env.path_fig)
         print('path_band =', *path_band, sep='\n', end='\n\n')
 
         Nk = ReSubInt('Nk', path_band[0])
@@ -204,7 +205,7 @@ class Swann:
         ax.set_xticks(k_point, labels=k_label)
         ax.set_ylabel(r'$E$')
 
-        fn = '%s/%s/band_' % (self.path_data, env.path_fig) + '_'.join([re.sub('%s/band_' % env.path_save, '', re.sub('_Nk.*', '', p)) for p in path_band]) + '_Nk%d.png' % Nk
+        fn = '%s/band_' % (dn + '_'.join([re.sub('%s/band_' % env.path_save, '', re.sub('_Nk.*', '', p)) for p in path_band]) + '_Nk%d.png' % Nk)
         fig.savefig(fn)
         print('Figure saved at %s\n' % fn)
         plt.show()

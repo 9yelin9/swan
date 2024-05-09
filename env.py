@@ -13,4 +13,3 @@ def ReSub(pattern, string):
 
 def ReSubInt(pattern, string):
     return int(re.sub(pattern, '', re.search('%s[-]?\d+' % pattern, string).group()))
-
