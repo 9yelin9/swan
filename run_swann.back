@@ -1,0 +1,71 @@
+#!/home/9yelin9/.local/bin/python3
+
+from swann import env, swann
+sw = swann.Swann()
+
+import os
+num_thread = env.num_thread
+os.environ['OMP_NUM_THREADS'] = str(num_thread)
+os.environ['OPENBLAS_NUM_THREADS'] = str(num_thread)
+print('num_threads =', num_thread, end='\n\n')
+
+import re
+import sys
+import itertools
+import numpy as np
+import pandas as pd
+
+import argparse
+parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
+parser.add_argument('-gl', '--genlat',   type=int, nargs='+', help='GenLat: <path_data> [n=0/int] [show_t=0/1] [show_tR=0/1]')
+parser.add_argument('-gb', '--genband',  type=str, nargs='+', help='GenBand: <path_lat> <Nk> [show_band=0/1]')
+parser.add_argument('-st', '--showt',    type=str, nargs='+', help='ShowT: <path_lat>')
+parser.add_argument('-sb', '--showband', type=str, nargs='+', help='ShowBand: <path_band(sep=:)> [fit_point=0/int]')
+
+parser.add_argument('-sp', '--showparam', type=str, nargs='+', help='ShowParam: <path_lat>')
+args = parser.parse_args()                                                                     
+
+def GetParam(df):
+    Uxy = np.array([[0, 1, 0], [1, 0, 0], [0, 0, 1]])
+    Uyz = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0]])
+    Uzx = np.array([[0, 0, 1], [0, 1, 0], [1, 0, 0]])
+
+    U_list = []
+    for n in range(sw.Dim+1):
+        for combi in itertools.combinations(range(sw.Dim), n):
+            I = np.eye(sw.Dim)
+            for i in combi: I[i][i] *= -1
+            for U in [np.eye(sw.Dim), Uxy, Uyz, Uzx]: U_list.append(U @ I)
+
+    print('-------------------- RotBasis --------------------', end='\n\n')
+    param_list = []
+    for i, (norm, df_norm) in enumerate(df.groupby('norm')):
+        if norm > 1e-6:
+            d0 = df_norm.iloc[0, :]
+            print('p%d' % i, d0.r, d0.norm); print(d0.t, end='\n\n')
+            for j, d in enumerate(df_norm.itertuples(index=False)):
+                print('p%d_%d:' % (i, j), d.r, end='')
+                cnt = 0
+                for k, U in enumerate(U_list):
+                    d_rot = np.conjugate(U).T @ d.t @ U
+                    if np.count_nonzero(np.abs(d0.t - d_rot) > 1e-4): cnt += 1
+                    else: break
+                if cnt == len(U_list):print(' fail'); sys.exit(1)
+                else: print(' success(%d)' % k)
+            param_list.append(d0); print()
+    print('--------------------------------------------------', end='\n\n')
+
+    return param_list
+
+def ShowParam(path_lat):
+    sw.GetDirSave(path_lat, env.path_lat); sw.ReadWin()
+    param_list = GetParam(pd.DataFrame(sw.GetT(sw.GetLat(path_lat)[0]), columns=['norm', 'r', 't']))
+    print(param_list)
+
+if args.genlat: sw.GenLat(*args.genlat)
+elif args.genband: sw.GenBand(*args.genband)
+elif args.showt: sw.ShowT(*args.showt)
+elif args.showband: sw.ShowBand(*args.showband)
+
+elif args.showparam: ShowParam(*args.showparam)
+else: parser.print_help()
