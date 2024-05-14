@@ -1,5 +1,3 @@
-from . import env
-
 import os
 import re
 import ctypes
@@ -12,9 +10,26 @@ class Swann:
     def __init__(self):
         np.set_printoptions(precision=6, suppress=True)
         plt.rcParams.update({'font.size': 28})
+
+        self.num_thread = 1
         self.Dim = 3
 
-    def ReadWin(self):
+        self.path_swann = '/home/9yelin9/R2Ir2O7/hf3/swann'
+        self.lat_col = ['i', 'j', 'k', 'p', 'q', 't_real', 't_imag']
+        self.lat_dtype = {'i':'i', 'j':'i', 'k':'i', 'p':'i', 'q':'i', 't_real':'d', 't_imag':'d'}
+        self.lat_format = ['%5d', '%5d', '%5d', '%5d', '%5d', '%12.6f', '%12.6f']
+
+    def ReSubFloat(self, pattern, string):
+        return float(re.sub(pattern, '', re.search('%s[-]?\d+[.]\d+' % pattern, string).group()))
+
+    def ReSubInt(self, pattern, string):
+        return int(re.sub(pattern, '', re.search('%s[-]?\d+' % pattern, string).group()))
+
+    def ReadWin(self, path, dir_save):
+        self.path_data = path.split('swann')[0]
+        self.path_save = '%s/swann/%s' % (self.path_data, dir_save)
+        os.makedirs(self.path_save, exist_ok=True)
+
         self.Nb, self.Nc, self.Ni = 0, 0, 0
         self.k_path, self.pos, self.basis, self.A = [], [], [], []
 
@@ -43,41 +58,16 @@ class Swann:
             self.A = np.array(self.A, dtype='d'); self.A /= self.A[self.A > 0][0]
             self.pos = np.array([np.sum([p[i]*self.A[i] for i in range(self.Dim)], axis=0) for p in self.pos])
 
+        """
         print('Nb =', self.Nb, 'Nc =', self.Nc, 'Ni =', self.Ni)
         print('path =', *self.k_path, sep='\n')
         print('pos =', *self.pos, sep='\n')
         print('A =', *self.A, sep='\n', end='\n\n')
+        """
 
-    def GetDirSave(self, path_in, path_out):
-        self.path_data = path_in.split('swann')[0]
-        dn = '%s/%s' % (self.path_data, path_out)
-        os.makedirs(dn, exist_ok=True)
-        return dn
-
-    def GetLat(self, path_lat):
-        df = pd.read_csv(path_lat, sep='\s+', names=env.lat_col).astype(dict(list(env.lat_dtype.items())))
-
-        r_list = np.array([np.sum([d[i]*self.A[i] for i in range(self.Dim)], axis=0) + self.pos[(d.q-1)//self.Nc] - self.pos[(d.p-1)//self.Nc] for d in df.itertuples(index=False)])
-        norm_list = np.round(np.linalg.norm(r_list, axis=1), decimals=6)
-        df['r1'], df['r2'], df['r3'], df['norm'] = *r_list.T, norm_list; norm_list = np.unique(norm_list)
-        df.sort_values(by=['norm', 'i', 'j', 'k', 'p', 'q'], inplace=True)
-
-        return df, r_list, norm_list
-
-    def GetT(self, df):
-        t_list = []
-        for norm, df_norm in df.groupby('norm'):
-            for r, df_norm_r in df_norm.groupby(['r1', 'r2', 'r3']):
-                t = np.zeros((self.Nc, self.Nc), dtype=complex)
-                for d in df_norm_r.itertuples(index=False):
-                    t[(d.p-1)%self.Nc][(d.q-1)%self.Nc] += complex(d.t_real + d.t_imag * 1j)
-                t_list.append([norm, r, t])
-
-        return t_list
-
-    def GetK(Nk):
+    def GetK(self, Nk):
         path_label, path_point = [], []
-        for p in k_path:
+        for p in self.k_path:
             path_label.append([p[0],       p[self.Dim+1]])
             path_point.append([p[1:self.Dim+1], p[self.Dim+2:]])
         path_label, path_point = np.array(path_label), np.array(path_point, dtype='d')
@@ -103,23 +93,37 @@ class Swann:
 
         return k, k_label, k_point
 
-    def GenLat(self, path_data, n, show_t=0, show_tR=0):
-        dn = self.GetDirSave(path_data, env.path_lat); self.ReadWin()
-        df, r_list, norm_list = self.GetLat('%s/lattice_n0.txt' % dn)
+    def AddNorm(self, df):
+        r_list = np.array([np.sum([d[i]*self.A[i] for i in range(self.Dim)], axis=0) + self.pos[(d.q-1)//self.Nc] - self.pos[(d.p-1)//self.Nc] for d in df.itertuples(index=False)])
+        norm_list = np.round(np.linalg.norm(r_list, axis=1), decimals=6)
+        df['r1'], df['r2'], df['r3'], df['norm'] = *r_list.T, norm_list;
+        df.sort_values(by=['norm', 'i', 'j', 'k', 'p', 'q'], inplace=True); df.reset_index(drop=True, inplace=True)
+        return df
+
+    def GenLat(self, path_data, n, show_tR=0, show_df=0):
+        n, show_tR = int(n), int(show_tR)
+        self.ReadWin(path_data, 'lat')
+
+        pat_site = '[-]?\d+\s+'
+        pat_obt  = '[-]?\d+\s+'
+        pat_t    = '[-]?\d+[.]\d+\s+'
+        pat = self.Dim * pat_site + 2 * pat_obt + 2 * pat_t
+
+        with open('%s/wannier90_hr.dat' % path_data, 'r') as f:
+            fp, line = 0, f.readline()
+            while line:
+                if re.search(pat, line): break
+                else: fp, line = f.tell(), f.readline()
+            f.seek(fp)
+            df = pd.read_csv(f, sep='\s+', names=self.lat_col).astype(dict(list(self.lat_dtype.items()))); df = self.AddNorm(df)
 
         if n:
-            norm_list = np.unique(norm_list)[:n+2] #r_list = r_list[norm_list < norm_list[n+1]]; r_list_uq = np.unique(r_list, axis=0)
-            df = df[df['norm'] < norm_list[n+1]]
+            norm_list = np.unique(df['norm'])[:n+2]
+            df = df[df['norm'] < norm_list[n+1]]; df.reset_index(drop=True, inplace=True)
             norm_list = norm_list[:-1]
-
-        if show_t:
-            t_list = self.GetT(df)
-            for norm, r, t in t_list:
-                print(norm, r, '\n', t.real, end='\n\n')
 
         if show_tR:
             df['t'] = np.sqrt(df['t_real']**2 + df['t_imag']**2)
-
             t1_max = np.max(df[np.abs(df['norm']-norm_list[1]) < 1e-6]['t'])
             print('r1_norm =', norm_list[1])
             print('t1_max =', t1_max, end='\n\n')
@@ -128,18 +132,20 @@ class Swann:
             for i in range(1, len(norm_list)):
                 t_max = np.max(df[np.abs(df['norm']-norm_list[i]) < 1e-6]['t'])
                 print('%6d%16.6f%16.6f' % (i, norm_list[i]/norm_list[1], t_max/t1_max))
-            print()
+            print(); df.drop(columns=['t'], inplace=True)
 
-        fn = '%s/lattice_n%d.txt' % (dn, n)
-        np.savetxt(fn, df[env.lat_col], fmt=env.lat_format)
+        if show_df: print(df)
+
+        fn = '%s/lat_n%d.h5' % (self.path_save, n)
+        df.to_hdf(fn, key='lat', mode='w')
         print('File saved at %s\n' % fn)
 
     def GenBand(self, path_lat, Nk, show_band=0):
-        dn = self.GetDirSave(path_lat, env.path_band); self.ReadWin()
         Nk, show_band = int(Nk), int(show_band)
+        self.ReadWin(path_lat, 'band')
         print('path_lat =', path_lat, '\nNk =', Nk, end='\n\n')
 
-        df, _, _ = self.GetLat(path_lat) 
+        df = pd.read_hdf(path_lat, key='lat') 
         k, k_label, k_point = self.GetK(Nk)
         if self.Nb != df['p'].max(): print('Wrong Nb =', df['p'].max(), end='\n\n'); sys.exit(1)
 
@@ -149,33 +155,22 @@ class Swann:
         k_c    = np.ctypeslib.as_ctypes(np.ravel(k))
         band_c = np.ctypeslib.as_ctypes(np.ravel(np.zeros((Nk, self.Nb))))
 
-        swann_c = ctypes.cdll.LoadLibrary('%s/libswann.so' % env.path_swann)
-        swann_c.GenBand(env.num_thread, self.Dim, self.Nb, Nk, len(df), k_c, site_c, obt_c, t_c, band_c)
+        swann_c = ctypes.cdll.LoadLibrary('%s/libswann.so' % self.path_swann)
+        swann_c.GenBand(self.num_thread, self.Dim, self.Nb, Nk, len(df), k_c, site_c, obt_c, t_c, band_c)
         band = np.reshape(np.ctypeslib.as_array(band_c), (Nk, self.Nb))
 
-        fn = '%s/%s' % (dn, re.sub('lattice_', 'band_', re.sub('[.]txt', '_Nk%d.txt' % Nk, path_lat)))
+        fn = '%s' % re.sub('lat', 'band', re.sub('[.]h5', '_Nk%d.txt' % Nk, path_lat))
         np.savetxt(fn, band)
         print('File saved at %s\n' % fn)
         if show_band: ShowBand(fn)
 
-    def ShowT(self, path_lat):
-        self.GetDirSave(path_lat, env.path_lat); self.ReadWin()
-        t_list = self.GetT(self.GetLat(path_lat)[0])
+        return fn
 
-        not_hermitian = []
-        for i, (norm, r, t) in enumerate(t_list):
-            if np.count_nonzero(np.abs(t - np.conjugate(t).T) > 1e-6): not_hermitian.append(i)
-            print(norm, r, '\n', t, end='\n\n')
-
-        print('%d of Non-hermitian t:' % len(not_hermitian))
-        for t_idx in not_hermitian:
-            print(norm, r, '\n', t, end='\n\n')
-        
     def ShowBand(self, path_band, fit_point=0):
-        path_band = path_band.split(':'); dn = self.GetDirSave(path_band[0], env.path_fig)
+        path_band = path_band.split(':'); self.ReadWin(path_band[0], 'fig')
         print('path_band =', *path_band, sep='\n', end='\n\n')
 
-        Nk = ReSubInt('Nk', path_band[0])
+        Nk = self.ReSubInt('Nk', path_band[0])
         k, k_label, k_point = self.GetK(Nk)
         fit_point, fit_label = int(fit_point), ''
         for l, p in zip(k_label, k_point):
@@ -188,7 +183,7 @@ class Swann:
         #ls = ['-', '--', '-.', ':'] * 2
 
         for i, p in enumerate(path_band):
-            band, n = np.genfromtxt(p), ReSubInt('n', p)
+            band, n = np.genfromtxt(p), self.ReSubInt('n', p)
             label = 'n=%d' % n 
 
             if fit_point:
@@ -205,7 +200,7 @@ class Swann:
         ax.set_xticks(k_point, labels=k_label)
         ax.set_ylabel(r'$E$')
 
-        fn = '%s/band_' % (dn + '_'.join([re.sub('%s/band_' % env.path_save, '', re.sub('_Nk.*', '', p)) for p in path_band]) + '_Nk%d.png' % Nk)
+        fn = '%s/band_%s' % (self.path_save, '_'.join([re.sub('.*band_', '', re.sub('_Nk.*', '', p)) for p in path_band]) + '_Nk%d.png' % Nk)
         fig.savefig(fn)
         print('Figure saved at %s\n' % fn)
         plt.show()

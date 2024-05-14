@@ -1,71 +1,115 @@
 #!/home/9yelin9/.local/bin/python3
 
-from swann import env, swann
+from swann import swann
 sw = swann.Swann()
 
 import os
-num_thread = env.num_thread
+num_thread = sw.num_thread
 os.environ['OMP_NUM_THREADS'] = str(num_thread)
 os.environ['OPENBLAS_NUM_THREADS'] = str(num_thread)
 print('num_threads =', num_thread, end='\n\n')
 
 import re
 import sys
+import scipy
+import ctypes
 import itertools
 import numpy as np
 import pandas as pd
+from timeit import default_timer as timer
 
 import argparse
 parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
-parser.add_argument('-gl', '--genlat',   type=int, nargs='+', help='GenLat: <path_data> [n=0/int] [show_t=0/1] [show_tR=0/1]')
+parser.add_argument('-gl', '--genlat',   type=str, nargs='+', help='GenLat: <path_data> [n=0/int] [show_tR=0/1] [show_df=0/1]')
 parser.add_argument('-gb', '--genband',  type=str, nargs='+', help='GenBand: <path_lat> <Nk> [show_band=0/1]')
-parser.add_argument('-st', '--showt',    type=str, nargs='+', help='ShowT: <path_lat>')
 parser.add_argument('-sb', '--showband', type=str, nargs='+', help='ShowBand: <path_band(sep=:)> [fit_point=0/int]')
 
-parser.add_argument('-sp', '--showparam', type=str, nargs='+', help='ShowParam: <path_lat>')
+parser.add_argument('--optsk', type=str, nargs='+', help='OptSK: <path_lat_target> [show_band=0/1] [verbose=0/1]')
 args = parser.parse_args()                                                                     
 
-def GetParam(df):
-    Uxy = np.array([[0, 1, 0], [1, 0, 0], [0, 0, 1]])
-    Uyz = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0]])
-    Uzx = np.array([[0, 0, 1], [0, 1, 0], [1, 0, 0]])
+Uxy = np.array([[0, 1, 0], [1, 0, 0], [0, 0, 1]])
+Uyz = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0]])
+Uzx = np.array([[0, 0, 1], [0, 1, 0], [1, 0, 0]])
 
-    U_list = []
-    for n in range(sw.Dim+1):
-        for combi in itertools.combinations(range(sw.Dim), n):
-            I = np.eye(sw.Dim)
-            for i in combi: I[i][i] *= -1
-            for U in [np.eye(sw.Dim), Uxy, Uyz, Uzx]: U_list.append(U @ I)
+U_list = []
+for n in range(sw.Dim+1):
+    for combi in itertools.combinations(range(sw.Dim), n):
+        I = np.eye(sw.Dim)
+        for i in combi: I[i][i] *= -1
+        for U in [np.eye(sw.Dim), Uxy, Uyz, Uzx]: U_list.append(U @ I)
+#TODO: (-, -, +) = (+, +, -) - check duplicates
+#TODO: show which axes are mirrored
 
+def GetT(df, verbose=0):
+    T = []
+    for norm, df_norm in df.groupby('norm'):
+        for r, df_norm_r in df_norm.groupby(['r1', 'r2', 'r3']):
+            t = np.zeros((sw.Nc, sw.Nc), dtype=complex)
+            for d in df_norm_r.itertuples(index=False):
+                t[(d.p-1)%sw.Nc][(d.q-1)%sw.Nc] += complex(d.t_real + d.t_imag * 1j)
+            T.append([norm, r, t])
+    df_t = pd.DataFrame(T, columns=['norm', 'r', 't'])
+
+    if not verbose: sys.stdout = open(os.devnull, 'w')
     print('-------------------- RotBasis --------------------', end='\n\n')
-    param_list = []
-    for i, (norm, df_norm) in enumerate(df.groupby('norm')):
+    T_sym = []
+    for i, (norm, df_t_norm) in enumerate(df_t.groupby('norm')):
         if norm > 1e-6:
-            d0 = df_norm.iloc[0, :]
+            d0 = df_t_norm.iloc[0, :]
+            T_sym.append(d0.t.real)
             print('p%d' % i, d0.r, d0.norm); print(d0.t, end='\n\n')
-            for j, d in enumerate(df_norm.itertuples(index=False)):
-                print('p%d_%d:' % (i, j), d.r, end='')
+            for j, d in enumerate(df_t_norm.itertuples(index=False)):
+                print('p%d_%d: ' % (i, j), d.r, end='')
                 cnt = 0
                 for k, U in enumerate(U_list):
                     d_rot = np.conjugate(U).T @ d.t @ U
                     if np.count_nonzero(np.abs(d0.t - d_rot) > 1e-4): cnt += 1
                     else: break
-                if cnt == len(U_list):print(' fail'); sys.exit(1)
-                else: print(' success(%d)' % k)
-            param_list.append(d0); print()
+                if cnt == len(U_list):
+                    sys.stdout = sys.__stdout__
+                    print('RotBasis fail'); print(d.t, end='\n\n')
+                    sys.exit(1)
+                else: print('success(%d)' % k)
+            print()
+    T_sym = np.ravel(T_sym)
     print('--------------------------------------------------', end='\n\n')
+    if not verbose: sys.stdout = sys.__stdout__
 
-    return param_list
+    return T_sym
 
-def ShowParam(path_lat):
-    sw.GetDirSave(path_lat, env.path_lat); sw.ReadWin()
-    param_list = GetParam(pd.DataFrame(sw.GetT(sw.GetLat(path_lat)[0]), columns=['norm', 'r', 't']))
-    print(param_list)
+def MSE(param_val, param_key, T_target, func):
+    path_lat = '%s/lat_%s.h5' % (sw.path_save, '_'.join(['%s%f' % (k, v) for k, v in zip(param_key, param_val)]))
+    func(sw.num_thread, (ctypes.c_double * len(param_val))(*param_val), path_lat.encode('utf_8'))
+    df = pd.read_hdf(path_lat, key='lat'); df = sw.AddNorm(df)
+    T = GetT(df, verbose=0)
+    return ((T - T_target)**2).mean()
+
+def OptSK(path_lat_target, show_band=0, verbose=0):
+    sw.ReadWin(path_lat_target, 'lat'); sw.path_save = re.sub('_wann', '_sk', sw.path_save)
+    df_target = pd.read_hdf(path_lat_target, key='lat')
+    T_target = GetT(df_target, verbose=verbose)
+
+    param = {'ts':1., 'tp':1., 'td':1., 'tn':1.}
+    libsk = ctypes.cdll.LoadLibrary('libsk.so')
+    libsk.gen_lattice.argtypes = [ctypes.c_int, ctypes.c_double * len(param), ctypes.c_char_p]
+    
+    t0 = timer()
+    res = scipy.optimize.minimize(MSE, [*param.values()], args=(list(param), T_target, libsk.gen_lattice))
+    path_lat = '%s/lat_%s.h5' % (sw.path_save, '_'.join(['%s%f' % (k, v) for k, v in zip(list(param), res.x)]))
+    df = pd.read_hdf(path_lat, key='lat'); df = sw.AddNorm(df)
+    T = GetT(df, verbose=0)
+    t1 = timer()
+
+    print('Optimization results (Elapsed time: %fs)' % (t1-t0))
+
+    print('T_target (%s):' % path_lat_target, '\n', T_target)
+    print('T (%s):' % path_lat, '\n', T)
+    print('MSE:', res.fun, end='\n\n')
+
+    if show_band: sw.ShowBand(':'.join([sw.GenBand(path_lat_target, 128), sw.GenBand(path_lat, 128)]))
 
 if args.genlat: sw.GenLat(*args.genlat)
 elif args.genband: sw.GenBand(*args.genband)
-elif args.showt: sw.ShowT(*args.showt)
 elif args.showband: sw.ShowBand(*args.showband)
-
-elif args.showparam: ShowParam(*args.showparam)
+elif args.optsk: OptSK(*args.optsk)
 else: parser.print_help()
