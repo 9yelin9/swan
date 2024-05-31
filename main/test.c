@@ -12,9 +12,11 @@ int main() {
 		0 - 2*I, 0 + 0*I, 3 + 0*I
 	};
 
+	printf("LAPACK_zheev() eigensolver test\n\n");
+	printf("Target mat (complex):\n");
 	for(i=0; i<N; i++) {
 		for(j=0; j<N; j++) {
-			printf("%f\t", creal(es[N*i + j]));
+			printf("%6.2f%6.2f\t", creal(es[N*i + j]), cimag(es[N*i + j]));
 		}
 		printf("\n");
 	}
@@ -22,6 +24,7 @@ int main() {
 
 	CalcEigen(n, es, ev);
 
+	printf("Eigenvals:\n");
 	for(i=0; i<N; i++) printf("%f\t", ev[i]);
 	printf("\n");
 

@@ -4,8 +4,8 @@ RM = rm -rf
 USR_DIR = /home/9yelin9/.local
 
 CFLAGS = -g -O2 -Wall -mcmodel=medium -I../include -I$(USR_DIR)/include -fopenmp
-LDFLAGS = -L../lib -L$(USR_DIR)/lib -L$(USR_DIR)/lib64 -fopenmp 
-LINKS = -lswann -lz -lm -lblas -llapack
+LDFLAGS = -L../libsw -L$(USR_DIR)/lib -L$(USR_DIR)/lib64 -fopenmp 
+LINKS = -lsw -lz -lm -lblas -llapack
 
 OBJS = test.o
 TARGETS = ../test
@@ -23,5 +23,5 @@ clean :
 dep :
 	$(CC) $(CFLAGS) -M $(OBJS:.o=.c) 
 
-../test : test.o
+$(TARGETS) : $(OBJS)
 	$(CC) $(LDLIBS) $(LDFLAGS) -o $@ $(OBJS) $(LINKS)
