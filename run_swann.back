@@ -1,7 +1,7 @@
 #!/home/9yelin9/.local/bin/python3
 
 from swann import swann
-sw = swann.Swann()
+sw = swann.Swann(1)
 
 import os
 num_thread = sw.num_thread
@@ -16,6 +16,7 @@ import ctypes
 import itertools
 import numpy as np
 import pandas as pd
+#import tensorflow as tf
 from timeit import default_timer as timer
 
 import argparse
@@ -24,23 +25,36 @@ parser.add_argument('-gl', '--genlat',   type=str, nargs='+', help='GenLat: <pat
 parser.add_argument('-gb', '--genband',  type=str, nargs='+', help='GenBand: <path_lat> <Nk> [show_band=0/1]')
 parser.add_argument('-sb', '--showband', type=str, nargs='+', help='ShowBand: <path_band(sep=:)> [fit_point=0/int]')
 
-parser.add_argument('--optsk', type=str, nargs='+', help='OptSK: <path_lat_target> [show_band=0/1] [verbose=0/1]')
+parser.add_argument('--optsk', type=str, nargs='+', help='OptSK: <path_lat_target> [method=\'BFGS\'] [cost=\'MSE1.0\'] [Nk=128] [show_band=0/1] [verbose=0/1]')
 args = parser.parse_args()                                                                     
 
-Uxy = np.array([[0, 1, 0], [1, 0, 0], [0, 0, 1]])
-Uyz = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0]])
-Uzx = np.array([[0, 0, 1], [0, 1, 0], [1, 0, 0]])
+Dim_U = 3
+levi_civi = 'yzxy'; levi_civi_r = levi_civi[::-1]
+I_name_list = ['ref-ax(0)', 'rot-ax(pi)', 'rot-z(pi)ref-x(0)']
+U_name_list = ['', 'ref-z(pi/4)', 'ref-x(pi/4)', 'ref-y(pi/4)']
+Uxy = np.array([[0, 1, 0], [1, 0, 0], [0, 0, 1]]) # ref-z(pi/4)
+Uyz = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0]]) # ref-x(pi/4)
+Uzx = np.array([[0, 0, 1], [0, 1, 0], [1, 0, 0]]) # ref-y(pi/4)
 
-U_list = []
-for n in range(sw.Dim+1):
-    for combi in itertools.combinations(range(sw.Dim), n):
-        I = np.eye(sw.Dim)
+def GetAx(combi):
+    axes = ''.join(levi_civi[i] for i in combi)
+    levi_civi_idx, levi_civi_r_idx = levi_civi.find(axes), levi_civi_r.find(axes)
+    if levi_civi_idx < 0: idx = np.abs(levi_civi_r_idx - 2)
+    else:                 idx = levi_civi_idx
+
+    return levi_civi[idx + len(combi) - 1]
+
+U_dict = {}
+for n, I_name0 in zip(range(1, Dim_U+1), I_name_list):
+    for combi in itertools.combinations(range(Dim_U), n):
+        I = np.eye(Dim_U); I_name = re.sub('ax', GetAx(combi), I_name0)
         for i in combi: I[i][i] *= -1
-        for U in [np.eye(sw.Dim), Uxy, Uyz, Uzx]: U_list.append(U @ I)
-#TODO: (-, -, +) = (+, +, -) - check duplicates
-#TODO: show which axes are mirrored
+        for U, U_name in zip([np.eye(Dim_U), Uxy, Uyz, Uzx], U_name_list):
+            U_dict['%s%s' % (I_name, U_name)] = I @ U
 
-def GetT(df, verbose=0):
+def GetT(df, r_target=[], verbose=0):
+    r_target_check = 1 if len(r_target) else 0
+
     T = []
     for norm, df_norm in df.groupby('norm'):
         for r, df_norm_r in df_norm.groupby(['r1', 'r2', 'r3']):
@@ -52,64 +66,97 @@ def GetT(df, verbose=0):
 
     if not verbose: sys.stdout = open(os.devnull, 'w')
     print('-------------------- RotBasis --------------------', end='\n\n')
-    T_sym = []
+    T_target, r_target_idx = [], 0
     for i, (norm, df_t_norm) in enumerate(df_t.groupby('norm')):
         if norm > 1e-6:
-            d0 = df_t_norm.iloc[0, :]
-            T_sym.append(d0.t.real)
+            if r_target_check:
+                d0 = df_t_norm[df_t_norm['r'].apply(np.allclose, b=r_target[r_target_idx], atol=1e-6)].iloc[0, :]
+            else:
+                d0 = df_t_norm.iloc[0, :]
+                r_target.append(d0.r)
+            T_target.append(d0.t.real)
             print('p%d' % i, d0.r, d0.norm); print(d0.t, end='\n\n')
             for j, d in enumerate(df_t_norm.itertuples(index=False)):
-                print('p%d_%d: ' % (i, j), d.r, end='')
-                cnt = 0
-                for k, U in enumerate(U_list):
-                    d_rot = np.conjugate(U).T @ d.t @ U
-                    if np.count_nonzero(np.abs(d0.t - d_rot) > 1e-4): cnt += 1
-                    else: break
-                if cnt == len(U_list):
+                print('p%d_%d:' % (i, j), d.r, end=' ')
+
+                cnt, key_list = 0, []
+                for key, U in U_dict.items():
+                    if np.allclose(d0.t, np.conjugate(U).T @ d.t @ U, atol=1e-4): key_list.append(key)
+                    else: cnt += 1
+
+                if cnt == len(U_dict):
                     sys.stdout = sys.__stdout__
                     print('RotBasis fail'); print(d.t, end='\n\n')
                     sys.exit(1)
-                else: print('success(%d)' % k)
-            print()
-    T_sym = np.ravel(T_sym)
+                else: print('success', key_list)
+            print(); r_target_idx += 1
     print('--------------------------------------------------', end='\n\n')
     if not verbose: sys.stdout = sys.__stdout__
 
-    return T_sym
+    T_target = np.ravel(T_target)
+    return T_target, r_target
 
-def MSE(param_val, param_key, T_target, func):
-    path_lat = '%s/lat_%s.h5' % (sw.path_save, '_'.join(['%s%f' % (k, v) for k, v in zip(param_key, param_val)]))
-    func(sw.num_thread, (ctypes.c_double * len(param_val))(*param_val), path_lat.encode('utf_8'))
+def DL(T, T_target, alpha): return alpha * np.sum(np.ones(T.shape) - np.sign(T)*np.sign(T_target))
+def MSE(T, T_target, alpha): return alpha * ((T - T_target)**2).mean()
+def MSE_DL(T, T_target, alpha): return MSE(T, T_target, alpha) + DL(T, T_target, 1-alpha)
+cost_func_dict = {
+    'DL': DL, # directional loss
+    'MSE': MSE, # mean squared error
+    'MSE-DL': MSE_DL, # hybrid loss (a*MSE + (1-a)*DL)
+}
+
+def Cost(param_val, param_key, T_target, r_target, method, cost_name, cost_alpha, gen_lattice):
+    path_lat = '%s/lat_%s_%s%.4f_%s.h5' % (sw.path_save, method, cost_name, cost_alpha, '_'.join(['%s%f' % (k, v) for k, v in zip(param_key, param_val)]))
+    gen_lattice(sw.num_thread, (ctypes.c_double * len(param_val))(*param_val), path_lat.encode('utf_8'))
     df = pd.read_hdf(path_lat, key='lat'); df = sw.AddNorm(df)
-    T = GetT(df, verbose=0)
-    return ((T - T_target)**2).mean()
+    T, _ = GetT(df, r_target=r_target, verbose=0)
+    return cost_func_dict[cost_name](T, T_target, cost_alpha)
 
-def OptSK(path_lat_target, show_band=0, verbose=0):
+def OptSK(path_lat_target, method='BFGS', cost='MSE1.0', Nk=128, show_band=0, verbose=0):
+    Nk, show_band, verbose = int(Nk), int(show_band), int(verbose)
+    cost_alpha_format = '\d+[.]?\d+'
+    cost_alpha = float(re.search(cost_alpha_format, cost).group())
+    cost_name = re.sub(cost_alpha_format, '', cost)
+
     sw.ReadWin(path_lat_target, 'lat'); sw.path_save = re.sub('_wann', '_sk', sw.path_save)
     df_target = pd.read_hdf(path_lat_target, key='lat')
-    T_target = GetT(df_target, verbose=verbose)
+    T_target, r_target = GetT(df_target, verbose=verbose)
 
-    param = {'ts':1., 'tp':1., 'td':1., 'tn':1.}
-    libsk = ctypes.cdll.LoadLibrary('libsk.so')
+    param = {'ts':-0.5, 'tp':0.5, 'td':-0.5, 'tn':0.5}
+    libsk = ctypes.cdll.LoadLibrary('%s/libsk.so' % sw.path_swann)
     libsk.gen_lattice.argtypes = [ctypes.c_int, ctypes.c_double * len(param), ctypes.c_char_p]
-    
+
+    print('lat_target:', path_lat_target, '\nopt_method:', method, '\nopt_cost: %s%.4f' % (cost_name, cost_alpha), '\n\nOptimization start')
     t0 = timer()
-    res = scipy.optimize.minimize(MSE, [*param.values()], args=(list(param), T_target, libsk.gen_lattice))
-    path_lat = '%s/lat_%s.h5' % (sw.path_save, '_'.join(['%s%f' % (k, v) for k, v in zip(list(param), res.x)]))
-    df = pd.read_hdf(path_lat, key='lat'); df = sw.AddNorm(df)
-    T = GetT(df, verbose=0)
+    res = scipy.optimize.minimize(Cost, [*param.values()], args=(list(param), T_target, r_target, method, cost_name, cost_alpha, libsk.gen_lattice), method=method, options={'disp':True})
+    #res = scipy.optimize.minimize(Cost, [*param.values()], args=(list(param), T_target, r_target, method, cost_name, cost_alpha, libsk.gen_lattice), method=method, bounds=((-1, 0), (0, 1), (-1, 0), (0, 1)), options={'disp':True})
     t1 = timer()
+    print('Optimization done (Elapsed time: %fs)' % (t1-t0), end='\n\n')
 
-    print('Optimization results (Elapsed time: %fs)' % (t1-t0))
+    path_lat = '%s/lat_%s_%s%.4f_%s.h5' % (sw.path_save, method, cost_name, cost_alpha, '_'.join(['%s%f' % (k, v) for k, v in zip(list(param), res.x)]))
+    df = pd.read_hdf(path_lat, key='lat'); df = sw.AddNorm(df)
+    T, _ = GetT(df, r_target=r_target, verbose=verbose)
 
-    print('T_target (%s):' % path_lat_target, '\n', T_target)
-    print('T (%s):' % path_lat, '\n', T)
-    print('MSE:', res.fun, end='\n\n')
+    print('Results:')
+    print('T_target (%s):' % path_lat_target, '\n', np.reshape(T_target, (-1, sw.Nc, sw.Nc)))
+    print('T (%s):' % path_lat, '\n', np.reshape(T, (-1, sw.Nc, sw.Nc)))
+    print('Cost (%s%.4f) =' % (cost_name, cost_alpha), res.fun, end='\n\n')
 
-    if show_band: sw.ShowBand(':'.join([sw.GenBand(path_lat_target, 128), sw.GenBand(path_lat, 128)]))
+    #if show_band: sw.ShowBand(':'.join([sw.GenBand(re.sub('lat_n\d+', 'lat_n0', path_lat_target), Nk)[0], sw.GenBand(path_lat_target, Nk)[0], sw.GenBand(path_lat, Nk)[0]]))
+    if show_band: sw.ShowBand(':'.join([sw.GenBand(path_lat_target, Nk)[0], sw.GenBand(path_lat, Nk)[0]]))
+
+    return path_lat
 
 if args.genlat: sw.GenLat(*args.genlat)
 elif args.genband: sw.GenBand(*args.genband)
 elif args.showband: sw.ShowBand(*args.showband)
 elif args.optsk: OptSK(*args.optsk)
 else: parser.print_help()
+print()
+
+"""
+for i in range(9844, 9859):
+    path_lat = OptSK('data/Nd2Ir2O7_wann/swann/lat/lat_n2.h5', 'BFGS', 'MSE-DL%.4f' % (i*1e-4))
+    if sw.ReSubFloat('tp', path_lat) < 0: break
+    #sw.ShowBand('data/Nd2Ir2O7_wann/swann/band/band_n0_Nk128.txt:data/Nd2Ir2O7_wann/swann/band/band_n%d_Nk128.txt' % i, fit_point=64)
+"""

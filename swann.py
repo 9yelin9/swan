@@ -7,14 +7,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class Swann:
-    def __init__(self):
+    def __init__(self, num_thread):
         np.set_printoptions(precision=6, suppress=True)
         plt.rcParams.update({'font.size': 28})
 
-        self.num_thread = 1
+        self.num_thread = num_thread
         self.Dim = 3
 
-        self.path_swann = '/home/9yelin9/R2Ir2O7/hf3/swann'
+        self.path_swann = 'swann'
         self.lat_col = ['i', 'j', 'k', 'p', 'q', 't_real', 't_imag']
         self.lat_dtype = {'i':'i', 'j':'i', 'k':'i', 'p':'i', 'q':'i', 't_real':'d', 't_imag':'d'}
         self.lat_format = ['%5d', '%5d', '%5d', '%5d', '%5d', '%12.6f', '%12.6f']
@@ -164,7 +164,7 @@ class Swann:
         print('File saved at %s\n' % fn)
         if show_band: ShowBand(fn)
 
-        return fn
+        return fn, band
 
     def ShowBand(self, path_band, fit_point=0):
         path_band = path_band.split(':'); self.ReadWin(path_band[0], 'fig')
@@ -174,7 +174,7 @@ class Swann:
         k, k_label, k_point = self.GetK(Nk)
         fit_point, fit_label = int(fit_point), ''
         for l, p in zip(k_label, k_point):
-            if fit_point <= p: fit_label = l
+            if fit_point >= p: fit_label = l
             print(l, p, end='\t')
         print(end='\n\n')
 
@@ -184,7 +184,7 @@ class Swann:
 
         for i, p in enumerate(path_band):
             band, n = np.genfromtxt(p), self.ReSubInt('n', p)
-            label = 'n=%d' % n 
+            label = 'n=%d' % n  if re.search('_wann', p) else re.sub('band_', '', re.sub('_Nk', '', re.search('band_.*_Nk', p).group()))
 
             if fit_point:
                 point = band[fit_point]
